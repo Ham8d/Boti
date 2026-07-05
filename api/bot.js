@@ -115,9 +115,17 @@ async function checkSub(userId) {
   return out;
 }
 async function sendSubPrompt(chatId, pending, payload) {
-  const kb = pending.map(ch => [{ text: "📢 اشترك في " + ch, url: "https://t.me/" + ch.replace("@","") }]);
+  let text = "⚠️ <b>يجب الاشتراك في القنوات التالية أولاً:</b>\n\n";
+  pending.forEach(ch => {
+    const username = ch.replace("@", "");
+    text += "📢 https://t.me/" + username + "\n";
+  });
+  const kb = pending.map(ch => {
+    const username = ch.replace("@", "");
+    return [{ text: "📢 t.me/" + username, url: "https://t.me/" + username }];
+  });
   kb.push([{ text: "✅ تحققت من الاشتراك", callback_data: "recheck:" + payload }]);
-  await send(chatId, "⚠️ يجب الاشتراك في القنوات التالية أولاً:", kb);
+  await send(chatId, text, kb);
 }
 
 // ─── Send button content ──────────────────────────────────────
@@ -132,9 +140,9 @@ async function sendContent(chatId, btn) {
   else if (type === "animation") await tg("sendAnimation",{ chat_id: chatId, animation: content,caption: cap, parse_mode: "HTML" });
 }
 
-// ─── User menu ────────────────────────────────────────────────
+// ─── User menu (only visible buttons) ────────────────────────
 function buildMenu(buttons) {
-  const keys = Object.keys(buttons);
+  const keys = Object.keys(buttons).filter(k => !buttons[k].hidden);
   if (!keys.length) return null;
   const rows = [];
   for (let i = 0; i < keys.length; i += 2) {
@@ -273,7 +281,7 @@ async function handleAdminReply(msg, state) {
 async function saveButton(chatId, label, type, content, caption) {
   const key  = makeKey();
   const btns = await getButtons();
-  btns[key]  = { label, type, content, caption, createdAt: Date.now() };
+  btns[key]  = { label, type, content, caption, hidden: false, createdAt: Date.now() };
   await setButtons(btns);
   const me   = await tg("getMe");
   const link = "https://t.me/" + me.result.username + "?start=btn_" + key;
@@ -281,8 +289,13 @@ async function saveButton(chatId, label, type, content, caption) {
     "✅ <b>تم حفظ الزر بنجاح!</b>\n\n" +
     "🔘 الاسم: <b>" + label + "</b>\n" +
     "📎 النوع: " + type + "\n\n" +
-    "🔗 <b>الرابط المباشر للزر:</b>\n<code>" + link + "</code>",
-    [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
+    "🔗 <b>الرابط المباشر:</b>\n<code>" + link + "</code>\n\n" +
+    "👁 <b>هل يظهر الزر في قائمة المستخدمين؟</b>",
+    [
+      [{ text: "👁 مرئي للجميع", callback_data: "adm:vis:" + key + ":0" },
+       { text: "🔒 مخفي (رابط فقط)", callback_data: "adm:vis:" + key + ":1" }],
+      [{ text: "↩️ القائمة", callback_data: "adm:open" }]
+    ]
   );
 }
 
@@ -333,8 +346,11 @@ async function handleCallback(query) {
       const btns = await getButtons(); const keys = Object.keys(btns);
       if (!keys.length) { await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
       let t = "📋 <b>الأزرار:</b>\n\n";
-      keys.forEach(k => { t += "🔘 <b>" + btns[k].label + "</b> — " + btns[k].type + "\n"; });
-      await editMsg(chatId, msgId, t, [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]);
+      keys.forEach(k => { t += (btns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + btns[k].label + "</b> (" + btns[k].type + ")\n"; });
+      t += "\n<i>اضغط على زر لتغيير حالة الظهور</i>";
+      const kb = keys.map(k => [{ text: (btns[k].hidden ? "🔒 " : "👁 ") + btns[k].label + " — اضغط لتبديل", callback_data: "adm:toggle:" + k }]);
+      kb.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
+      await editMsg(chatId, msgId, t, kb);
       return;
     }
 
@@ -363,6 +379,38 @@ async function handleCallback(query) {
       const label = btns[key] ? btns[key].label : key;
       delete btns[key]; await setButtons(btns);
       await editMsg(chatId, msgId, "✅ تم حذف الزر \"<b>" + label + "</b>\".", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]);
+      return;
+    }
+
+    // Set visibility after creating button: adm:vis:KEY:0(visible) or :1(hidden)
+    if (data.startsWith("adm:vis:")) {
+      const parts = data.split(":");
+      const key = parts[2];
+      const hidden = parts[3] === "1";
+      const btns = await getButtons();
+      if (btns[key]) { btns[key].hidden = hidden; await setButtons(btns); }
+      await editMsg(chatId, msgId,
+        hidden
+          ? "🔒 <b>الزر مخفي من القائمة</b>\nيمكن الوصول إليه عبر الرابط المباشر فقط."
+          : "👁 <b>الزر مرئي للجميع</b> في القائمة الرئيسية.",
+        [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]
+      );
+      return;
+    }
+
+    // Toggle visibility from list: adm:toggle:KEY
+    if (data.startsWith("adm:toggle:")) {
+      const key = data.slice("adm:toggle:".length);
+      const btns = await getButtons();
+      if (btns[key]) { btns[key].hidden = !btns[key].hidden; await setButtons(btns); }
+      // Refresh the list
+      const allBtns = await getButtons(); const keys2 = Object.keys(allBtns);
+      let t = "📋 <b>الأزرار:</b>\n\n";
+      keys2.forEach(k => { t += (allBtns[k].hidden ? "🔒 مخفي" : "👁 مرئي") + " — <b>" + allBtns[k].label + "</b> (" + allBtns[k].type + ")\n"; });
+      t += "\n<i>اضغط على زر لتغيير حالة الظهور</i>";
+      const kb2 = keys2.map(k => [{ text: (allBtns[k].hidden ? "🔒 " : "👁 ") + allBtns[k].label + " — اضغط لتبديل", callback_data: "adm:toggle:" + k }]);
+      kb2.push([{ text: "↩️ رجوع", callback_data: "adm:back" }]);
+      await editMsg(chatId, msgId, t, kb2);
       return;
     }
 
