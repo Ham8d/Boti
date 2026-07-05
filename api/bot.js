@@ -402,7 +402,7 @@ async function handleAdminState(msg, state) {
   if (state.step === "broadcast") {
     await clearState(userId);
     const users = await getUsers();
-    const progressMsg = await send(chatId, `📤 جاري الإرسال لـ ${users.length} مستخدم...`);
+    await send(chatId, `📤 جاري الإرسال لـ ${users.length} مستخدم...`);
     let ok = 0, fail = 0;
     for (const uid of users) {
       try { const r = await tg("sendMessage", { chat_id: uid, text, parse_mode: "HTML" }); r.ok ? ok++ : fail++; }
@@ -410,9 +410,10 @@ async function handleAdminState(msg, state) {
       await new Promise(r => setTimeout(r, 50));
     }
     await send(chatId, `✅ <b>اكتمل الإرسال</b>\n\n✔️ نجح: ${ok}\n❌ فشل: ${fail}`, [[{ text: "↩️ رجوع للقائمة", callback_data: "adm:open" }]]);
-
-    // إضافة قناة
+    return;
   }
+
+  // إضافة قناة
   if (state.step === "add_channel") {
     let ch = text.trim();
     if (!ch.startsWith("@")) ch = "@" + ch;
@@ -425,6 +426,7 @@ async function handleAdminState(msg, state) {
       await clearState(userId);
       await send(chatId, `✅ تمت إضافة القناة <b>${ch}</b>.`, [[{ text: "↩️ رجوع للقائمة", callback_data: "adm:open" }]]);
     }
+    return;
   }
 }
 
@@ -632,29 +634,43 @@ module.exports = async function handler(req, res) {
       const userId = msg.from?.id;
       const text   = msg.text || "";
 
-      if (text.startsWith("/start")) {
-        await handleStart(msg, text.split(" ")[1] || "");
-      } else if (isAdmin(userId)) {
-        const state = await getState(userId);
-        if (state) {
-          await handleAdminState(msg, state);
-        } else if (text === "/admin") {
+      try {
+        if (text.startsWith("/start")) {
+          await handleStart(msg, text.split(" ")[1] || "");
+        } else if (text === "/admin" && isAdmin(userId)) {
+          await clearState(userId);
           await adminMenu(msg.chat.id);
+        } else if (isAdmin(userId)) {
+          const state = await getState(userId);
+          if (state) {
+            await handleAdminState(msg, state);
+          } else {
+            // أدمن بدون حالة — أظهر قائمة التحكم
+            await adminMenu(msg.chat.id);
+          }
+        } else {
+          // مستخدم عادي
+          const pending = await checkSubscription(userId);
+          if (pending.length) { await sendSubPrompt(msg.chat.id, pending, ""); }
+          else {
+            await addUser(userId);
+            const info    = await getBotInfo();
+            const buttons = await getButtons();
+            await send(msg.chat.id, info.welcome, buildMenu(buttons));
+          }
         }
-      } else {
-        // مستخدم عادي — تحقق من الاشتراك ثم أظهر القائمة
-        const pending = await checkSubscription(userId);
-        if (pending.length) { await sendSubPrompt(msg.chat.id, pending, ""); }
-        else {
-          await addUser(userId);
-          const info = await getBotInfo();
-          const buttons = await getButtons();
-          const kb = buildMenu(buttons);
-          await send(msg.chat.id, info.welcome, kb);
+      } catch (e) {
+        console.error("msg handler error:", e);
+        if (isAdmin(userId)) {
+          await send(msg.chat.id, `⚠️ حدث خطأ: ${e.message}`, [[{ text: "↩️ القائمة الرئيسية", callback_data: "adm:open" }]]).catch(() => {});
         }
       }
     } else if (update.callback_query) {
-      await handleCallback(update.callback_query);
+      try {
+        await handleCallback(update.callback_query);
+      } catch (e) {
+        console.error("callback handler error:", e);
+      }
     }
 
     res.status(200).end();
