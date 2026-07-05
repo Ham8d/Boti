@@ -1,7 +1,7 @@
 {
   "name": "telegram-button-bot",
-  "version": "1.0.0",
-  "description": "Telegram Button Bot - Single File - Vercel Deploy",
+  "version": "2.0.0",
+  "description": "Telegram Button Bot - JSONBin Storage - Vercel Deploy",
   "main": "bot.js",
   "engines": {
     "node": ">=18"
