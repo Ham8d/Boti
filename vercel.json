@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "/admin(.*)", "dest": "/bot.js" },
+    { "src": "/api/bot(.*)", "dest": "/bot.js" },
+    { "src": "/(.*)", "dest": "/bot.js" }
+  ]
+}
