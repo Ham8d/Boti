@@ -27,12 +27,14 @@ async function kvSet(key, value) {
   MEM[key] = value;
   if (!KV_URL) return;
   try {
-    await fetch(KV_URL + "/set/" + encodeURIComponent(key), {
+    const r = await fetch(KV_URL + "/set/" + encodeURIComponent(key), {
       method: "POST",
-      headers: { Authorization: "Bearer " + KV_TOKEN, "Content-Type": "application/json" },
-      body: JSON.stringify(JSON.stringify(value))
+      headers: { Authorization: "Bearer " + KV_TOKEN, "Content-Type": "text/plain" },
+      body: JSON.stringify(value)
     });
-  } catch {}
+    const j = await r.json();
+    if (!j.result) console.error("kvSet error for key=" + key + ":", JSON.stringify(j));
+  } catch(e) { console.error("kvSet exception for key=" + key + ":", e.message); }
 }
 
 // ─── Data ─────────────────────────────────────────────────────
