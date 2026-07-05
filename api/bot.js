@@ -108,20 +108,25 @@ async function checkSub(userId) {
   const out = [];
   for (const ch of chs) {
     try {
-      const r = await tg("getChatMember", { chat_id: ch, user_id: userId });
+      const normalized = "@" + ch.replace(/^@/, "").replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").split("/")[0].split("?")[0];
+      const r = await tg("getChatMember", { chat_id: normalized, user_id: userId });
       if (!["member","administrator","creator"].includes(r.result && r.result.status)) out.push(ch);
     } catch { out.push(ch); }
   }
   return out;
 }
+function cleanUsername(ch) {
+  return ch.replace(/^@/, "").replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").split("/")[0].split("?")[0];
+}
+
 async function sendSubPrompt(chatId, pending, payload) {
   let text = "⚠️ <b>يجب الاشتراك في القنوات التالية أولاً:</b>\n\n";
   pending.forEach(ch => {
-    const username = ch.replace("@", "");
+    const username = cleanUsername(ch);
     text += "📢 https://t.me/" + username + "\n";
   });
   const kb = pending.map(ch => {
-    const username = ch.replace("@", "");
+    const username = cleanUsername(ch);
     return [{ text: "📢 t.me/" + username, url: "https://t.me/" + username }];
   });
   kb.push([{ text: "✅ تحققت من الاشتراك", callback_data: "recheck:" + payload }]);
