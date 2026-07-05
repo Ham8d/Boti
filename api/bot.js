@@ -267,7 +267,9 @@ async function handleAdminReply(msg, state) {
 
   if (state.step === "addch") {
     let ch = text.trim();
-    if (!ch.startsWith("@")) ch = "@" + ch;
+    // Normalize: strip https://, http://, t.me/ so user can paste any format
+    ch = ch.replace(/^https?:\/\//i, "").replace(/^t\.me\//i, "").replace(/^@/, "").split("/")[0].split("?")[0];
+    ch = "@" + ch;
     const chs = await getChannels();
     if (chs.includes(ch)) { await send(chatId, "⚠️ القناة مضافة مسبقاً.", [[{ text: "↩️ القائمة", callback_data: "adm:open" }]]); return; }
     chs.push(ch);
