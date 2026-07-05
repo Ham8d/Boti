@@ -63,6 +63,8 @@ function extractState(text) {
 
 // ─── Helpers ──────────────────────────────────────────────────
 function slug(s) { return s.trim().replace(/\s+/g,"_").replace(/[^\w\u0600-\u06FF]/g,"").slice(0,30); }
+// URL-safe key for deep links — Telegram only allows [A-Za-z0-9_-]
+function makeKey() { return "b" + Date.now().toString(36) + Math.random().toString(36).slice(2,5); }
 const isAdmin = id => parseInt(id) === ADMIN_ID;
 
 async function tg(method, body) {
@@ -265,7 +267,7 @@ async function handleAdminReply(msg, state) {
 }
 
 async function saveButton(chatId, label, type, content, caption) {
-  const key  = slug(label);
+  const key  = makeKey();
   const btns = await getButtons();
   btns[key]  = { label, type, content, caption, createdAt: Date.now() };
   await setButtons(btns);
@@ -531,6 +533,38 @@ module.exports = async function handler(req, res) {
     res.status(200).json({ ok: r.ok, webhook: webhookUrl }); return;
   }
 
+  // Debug / health check
+  if (path === "/debug" || url.searchParams.get("debug") === "1") {
+    const kvOk = !!KV_URL && !!KV_TOKEN;
+    let kvTest = "لم يُختبر";
+    if (kvOk) {
+      try {
+        await kvSet("__ping", 1);
+        const v = await kvGet("__ping");
+        kvTest = v === 1 ? "✅ يعمل بشكل صحيح" : "❌ فشل القراءة";
+      } catch(e) { kvTest = "❌ خطأ: " + e.message; }
+    }
+    const html = "<!DOCTYPE html><html dir='rtl'><head><meta charset='UTF-8'><title>تشخيص</title>" +
+      "<style>body{font-family:monospace;background:#111;color:#eee;padding:24px}h2{color:#7986cb}.ok{color:#81c784}.err{color:#e57373}.warn{color:#ffb74d}table{border-collapse:collapse;width:100%}td{padding:8px;border-bottom:1px solid #333}</style></head><body>" +
+      "<h2>🔧 تشخيص البوت</h2><table>" +
+      "<tr><td>BOT_TOKEN</td><td class='" + (process.env.BOT_TOKEN ? "ok'>✅ مُعدَّل" : "warn'>⚠️ يستخدم القيمة الافتراضية") + "</td></tr>" +
+      "<tr><td>ADMIN_ID</td><td class='" + (process.env.ADMIN_ID ? "ok'>✅ " + ADMIN_ID : "warn'>⚠️ يستخدم القيمة الافتراضية: " + ADMIN_ID) + "</td></tr>" +
+      "<tr><td>UPSTASH_REDIS_REST_URL</td><td class='" + (KV_URL ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل — الأزرار لن تحفظ!") + "</td></tr>" +
+      "<tr><td>UPSTASH_REDIS_REST_TOKEN</td><td class='" + (KV_TOKEN ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل") + "</td></tr>" +
+      "<tr><td>اختبار KV</td><td class='" + (kvOk ? "" : "err'") + "'>" + (kvOk ? kvTest : "❌ غير ممكن بدون إعداد") + "</td></tr>" +
+      "</table>" +
+      (!KV_URL ? "<div style='margin-top:20px;padding:16px;background:#2a1010;border:1px solid #c62828;border-radius:8px'>" +
+        "<b style='color:#ef9a9a'>⚠️ مطلوب: إضافة متغيرات البيئة في Vercel</b><br><br>" +
+        "1. افتح <a href='https://vercel.com/dashboard' style='color:#7986cb'>vercel.com/dashboard</a><br>" +
+        "2. اضغط على مشروعك → Settings → Environment Variables<br>" +
+        "3. أضف: <code>UPSTASH_REDIS_REST_URL</code> و <code>UPSTASH_REDIS_REST_TOKEN</code><br>" +
+        "4. اضغط Save → Redeploy" +
+        "</div>" : "") +
+      "</body></html>";
+    res.setHeader("Content-Type","text/html; charset=utf-8");
+    res.status(200).send(html); return;
+  }
+
   // Web admin
   if (path === "/admin" || path === "/admin/") {
     function gc(name) {
@@ -560,7 +594,7 @@ module.exports = async function handler(req, res) {
       const action = p.get("action");
       if (action === "add") {
         const label = (p.get("label") || "").trim(), type = p.get("type"), content = (p.get("content") || "").trim(), caption = (p.get("caption") || "").trim();
-        if (label && content) { const btns = await getButtons(); btns[slug(label)] = { label, type, content, caption, createdAt: Date.now() }; await setButtons(btns); }
+        if (label && content) { const btns = await getButtons(); btns[makeKey()] = { label, type, content, caption, createdAt: Date.now() }; await setButtons(btns); }
       } else if (action === "del") {
         const btns = await getButtons(); delete btns[p.get("key")]; await setButtons(btns);
       } else if (action === "addch") {
