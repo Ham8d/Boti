@@ -1,58 +1,68 @@
-// bot.js — Telegram Button Bot | Vercel + Upstash
+// bot.js — Telegram Button Bot | Vercel + JSONBin.io (no Upstash)
 
 const BOT_TOKEN  = process.env.BOT_TOKEN  || "8477156849:AAEcwk7nhNJtn5tAPfxQ3L_3NDcrN8b_-zU";
 const ADMIN_ID   = parseInt(process.env.ADMIN_ID  || "1651487511");
 const ADMIN_PASS = process.env.ADMIN_PASS || "admin123";
 const API        = "https://api.telegram.org/bot" + BOT_TOKEN;
 
-// ─── KV (Upstash) — persistent data only ─────────────────────
-const KV_URL   = process.env.KV_REST_API_URL   || process.env.UPSTASH_REDIS_REST_URL   || "";
-const KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
-const MEM = {};
+// ─── JSONBin.io Storage ───────────────────────────────────────
+const JBKEY = process.env.JSONBIN_KEY || "";
+const JBID  = process.env.JSONBIN_ID  || "";
+const JBURL = "https://api.jsonbin.io/v3/b";
 
-async function kvGet(key) {
-  MEM.__hits = (MEM.__hits || 0) + 1;
-  if (!KV_URL) return MEM[key] !== undefined ? MEM[key] : null;
+const DEFAULT_DATA = {
+  btns:  {},
+  chs:   [],
+  users: [],
+  info:  { welcome: "أهلاً بك! 👋\nاختر من القائمة:" }
+};
+
+let MEM_DATA = null; // cache per warm instance
+
+async function getAll() {
+  if (MEM_DATA) return MEM_DATA;
+  if (!JBKEY || !JBID) return JSON.parse(JSON.stringify(DEFAULT_DATA));
   try {
-    const r = await fetch(KV_URL + "/get/" + encodeURIComponent(key), {
-      headers: { Authorization: "Bearer " + KV_TOKEN }
+    const r = await fetch(JBURL + "/" + JBID + "/latest", {
+      headers: { "X-Master-Key": JBKEY, "X-Bin-Meta": "false" }
     });
     const j = await r.json();
-    if (j.result == null) return null;
-    try { return JSON.parse(j.result); } catch { return j.result; }
-  } catch { return MEM[key] !== undefined ? MEM[key] : null; }
+    MEM_DATA = Object.assign({}, DEFAULT_DATA, j);
+    return MEM_DATA;
+  } catch(e) {
+    console.error("getAll error:", e.message);
+    return JSON.parse(JSON.stringify(DEFAULT_DATA));
+  }
 }
 
-async function kvSet(key, value) {
-  MEM[key] = value;
-  if (!KV_URL) return;
+async function setAll(data) {
+  MEM_DATA = data;
+  if (!JBKEY || !JBID) return;
   try {
-    const r = await fetch(KV_URL + "/set/" + encodeURIComponent(key), {
-      method: "POST",
-      headers: { Authorization: "Bearer " + KV_TOKEN, "Content-Type": "text/plain" },
-      body: JSON.stringify(value)
+    const r = await fetch(JBURL + "/" + JBID, {
+      method: "PUT",
+      headers: { "X-Master-Key": JBKEY, "Content-Type": "application/json" },
+      body: JSON.stringify(data)
     });
     const j = await r.json();
-    if (!j.result) console.error("kvSet error for key=" + key + ":", JSON.stringify(j));
-  } catch(e) { console.error("kvSet exception for key=" + key + ":", e.message); }
+    if (!j.record) console.error("setAll error:", JSON.stringify(j));
+  } catch(e) { console.error("setAll error:", e.message); }
 }
 
-// ─── Data ─────────────────────────────────────────────────────
-async function getButtons()  { return (await kvGet("btns"))  || {}; }
-async function setButtons(v) { return kvSet("btns", v); }
-async function getChannels() { return (await kvGet("chs"))   || []; }
-async function setChannels(v){ return kvSet("chs", v); }
-async function getUsers()    { return (await kvGet("users")) || []; }
-async function getBotInfo()  { return (await kvGet("info"))  || { welcome: "أهلاً بك! 👋\nاختر من القائمة:" }; }
-async function setBotInfo(v) { return kvSet("info", v); }
+// ─── Data helpers ─────────────────────────────────────────────
+async function getButtons()  { return (await getAll()).btns  || {}; }
+async function setButtons(v) { const d = await getAll(); d.btns = v;  await setAll(d); }
+async function getChannels() { return (await getAll()).chs   || []; }
+async function setChannels(v){ const d = await getAll(); d.chs  = v;  await setAll(d); }
+async function getUsers()    { return (await getAll()).users || []; }
+async function getBotInfo()  { return (await getAll()).info  || DEFAULT_DATA.info; }
+async function setBotInfo(v) { const d = await getAll(); d.info = v;  await setAll(d); }
 async function addUser(id) {
-  const u = await getUsers();
-  if (!u.includes(id)) { u.push(id); await kvSet("users", u); }
+  const d = await getAll();
+  if (!d.users.includes(id)) { d.users.push(id); await setAll(d); }
 }
 
 // ─── State embedded in message text ──────────────────────────
-// No KV needed for conversation state — state is hidden inside bot messages.
-// Admin must "Reply" to bot's force_reply messages.
 function embedState(prompt, state) {
   return prompt + "\n\n<code>【" + JSON.stringify(state) + "】</code>";
 }
@@ -64,8 +74,6 @@ function extractState(text) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
-function slug(s) { return s.trim().replace(/\s+/g,"_").replace(/[^\w\u0600-\u06FF]/g,"").slice(0,30); }
-// URL-safe key for deep links — Telegram only allows [A-Za-z0-9_-]
 function makeKey() { return "b" + Date.now().toString(36) + Math.random().toString(36).slice(2,5); }
 const isAdmin = id => parseInt(id) === ADMIN_ID;
 
@@ -116,12 +124,12 @@ async function sendSubPrompt(chatId, pending, payload) {
 async function sendContent(chatId, btn) {
   const { type, content, caption } = btn;
   const cap = caption || "";
-  if (type === "text")      await send(chatId, content);
-  else if (type === "photo")    await tg("sendPhoto",    { chat_id: chatId, photo: content,    caption: cap, parse_mode: "HTML" });
-  else if (type === "video")    await tg("sendVideo",    { chat_id: chatId, video: content,    caption: cap, parse_mode: "HTML" });
-  else if (type === "audio")    await tg("sendAudio",    { chat_id: chatId, audio: content,    caption: cap, parse_mode: "HTML" });
-  else if (type === "document") await tg("sendDocument", { chat_id: chatId, document: content, caption: cap, parse_mode: "HTML" });
-  else if (type === "animation")await tg("sendAnimation",{ chat_id: chatId, animation: content,caption: cap, parse_mode: "HTML" });
+  if (type === "text")       await send(chatId, content);
+  else if (type === "photo")     await tg("sendPhoto",    { chat_id: chatId, photo: content,    caption: cap, parse_mode: "HTML" });
+  else if (type === "video")     await tg("sendVideo",    { chat_id: chatId, video: content,    caption: cap, parse_mode: "HTML" });
+  else if (type === "audio")     await tg("sendAudio",    { chat_id: chatId, audio: content,    caption: cap, parse_mode: "HTML" });
+  else if (type === "document")  await tg("sendDocument", { chat_id: chatId, document: content, caption: cap, parse_mode: "HTML" });
+  else if (type === "animation") await tg("sendAnimation",{ chat_id: chatId, animation: content,caption: cap, parse_mode: "HTML" });
 }
 
 // ─── User menu ────────────────────────────────────────────────
@@ -180,12 +188,11 @@ async function handleStart(msg, payload) {
   await send(chatId, info.welcome, kb.length ? kb : null);
 }
 
-// ─── Admin reply handler (reply_to_message) ───────────────────
+// ─── Admin reply handler ───────────────────────────────────────
 async function handleAdminReply(msg, state) {
   const chatId = msg.chat.id;
   const text   = msg.text || "";
 
-  // Step 1: received label — ask for type
   if (state.step === "label") {
     const label = text.trim();
     if (!label) { await send(chatId, "❌ الاسم لا يمكن أن يكون فارغاً. أرسل الاسم مجدداً:"); return; }
@@ -199,7 +206,6 @@ async function handleAdminReply(msg, state) {
     return;
   }
 
-  // Step 2: received content — save or ask for caption
   if (state.step === "content") {
     let content = text.trim();
     if (!content) {
@@ -223,14 +229,12 @@ async function handleAdminReply(msg, state) {
     return;
   }
 
-  // Step 3: received caption
   if (state.step === "caption") {
     const caption = text.trim() === "-" ? "" : text.trim();
     await saveButton(chatId, state.label, state.type, state.content, caption);
     return;
   }
 
-  // Welcome message
   if (state.step === "welcome") {
     const info = await getBotInfo();
     info.welcome = text.trim();
@@ -239,7 +243,6 @@ async function handleAdminReply(msg, state) {
     return;
   }
 
-  // Broadcast
   if (state.step === "bcast") {
     const users = await getUsers();
     await send(chatId, "📤 جاري الإرسال لـ " + users.length + " مستخدم...");
@@ -254,7 +257,6 @@ async function handleAdminReply(msg, state) {
     return;
   }
 
-  // Add channel
   if (state.step === "addch") {
     let ch = text.trim();
     if (!ch.startsWith("@")) ch = "@" + ch;
@@ -293,13 +295,11 @@ async function handleCallback(query) {
 
   await tg("answerCallbackQuery", { callback_query_id: query.id });
 
-  // Admin callbacks
   if (data.startsWith("adm:")) {
     if (!isAdmin(userId)) return;
 
     if (data === "adm:open" || data === "adm:back") { await adminMenu(chatId, msgId); return; }
 
-    // Add button — step 1: ask for label
     if (data === "adm:add") {
       await forceReply(chatId, embedState(
         "🔘 <b>إضافة زر — الخطوة 1/3</b>\n\nاضغط ↩️ <b>رد (Reply)</b> على هذه الرسالة وأرسل <b>اسم الزر</b>:",
@@ -308,8 +308,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Type selected — step 2: ask for content
-    // callback: adm:t:TYPE:LABEL
     if (data.startsWith("adm:t:")) {
       const parts = data.split(":");
       const type  = parts[2];
@@ -324,15 +322,13 @@ async function handleCallback(query) {
       };
       await forceReply(chatId, embedState(
         "📎 <b>إضافة زر — الخطوة 2/3</b>\n\n" +
-        "✅ الاسم: <b>" + label + "</b>\n" +
-        "✅ النوع: <b>" + type + "</b>\n\n" +
+        "✅ الاسم: <b>" + label + "</b>\n✅ النوع: <b>" + type + "</b>\n\n" +
         "اضغط ↩️ <b>رد (Reply)</b> وأرسل <b>المحتوى</b>:\n" + hints[type],
         { step: "content", label, type }
       ));
       return;
     }
 
-    // List buttons
     if (data === "adm:list") {
       const btns = await getButtons(); const keys = Object.keys(btns);
       if (!keys.length) { await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
@@ -342,7 +338,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Links
     if (data === "adm:links") {
       const btns = await getButtons(); const me = await tg("getMe"); const u = me.result && me.result.username;
       const keys = Object.keys(btns);
@@ -353,7 +348,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Delete button list
     if (data === "adm:del") {
       const btns = await getButtons(); const keys = Object.keys(btns);
       if (!keys.length) { await editMsg(chatId, msgId, "📭 لا توجد أزرار.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
@@ -363,7 +357,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Confirm delete button
     if (data.startsWith("adm:delkey:")) {
       const key = data.slice("adm:delkey:".length);
       const btns = await getButtons();
@@ -373,7 +366,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Add channel
     if (data === "adm:addch") {
       await forceReply(chatId, embedState(
         "📢 <b>إضافة قناة اشتراك إجباري</b>\n\nاضغط ↩️ <b>رد</b> وأرسل معرّف القناة (مثال: @mychannel)\n\n⚠️ يجب أن يكون البوت مشرفاً في القناة:",
@@ -382,7 +374,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Delete channel list
     if (data === "adm:delch") {
       const chs = await getChannels();
       if (!chs.length) { await editMsg(chatId, msgId, "📭 لا توجد قنوات.", [[{ text: "↩️ رجوع", callback_data: "adm:back" }]]); return; }
@@ -392,7 +383,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Confirm delete channel
     if (data.startsWith("adm:delchkey:")) {
       const ch = data.slice("adm:delchkey:".length);
       await setChannels((await getChannels()).filter(c => c !== ch));
@@ -400,7 +390,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Welcome
     if (data === "adm:welcome") {
       const info = await getBotInfo();
       await forceReply(chatId, embedState(
@@ -410,7 +399,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Broadcast
     if (data === "adm:bcast") {
       const users = await getUsers();
       await forceReply(chatId, embedState(
@@ -420,7 +408,6 @@ async function handleCallback(query) {
       return;
     }
 
-    // Stats
     if (data === "adm:stats") {
       const [users, btns, chs] = await Promise.all([getUsers(), getButtons(), getChannels()]);
       await editMsg(chatId, msgId,
@@ -435,7 +422,6 @@ async function handleCallback(query) {
     return;
   }
 
-  // Recheck subscription
   if (data.startsWith("recheck:")) {
     const payload = data.slice(8);
     const pending = await checkSub(userId);
@@ -449,7 +435,6 @@ async function handleCallback(query) {
     return;
   }
 
-  // Button press
   if (data.startsWith("btn:")) {
     const key = data.slice(4);
     const pending = await checkSub(userId);
@@ -525,42 +510,65 @@ async function adminWebHTML(u) {
 
 // ─── Main Vercel handler ──────────────────────────────────────
 module.exports = async function handler(req, res) {
+  MEM_DATA = null; // reset cache per request
   const url  = new URL(req.url, "https://" + req.headers.host);
   const path = url.pathname;
 
-  // Setup webhook
+  // Setup: create webhook + create JSONBin if needed
   if (url.searchParams.get("setup") === "1") {
     const webhookUrl = "https://" + req.headers.host + "/api/bot";
-    const r = await tg("setWebhook", { url: webhookUrl, allowed_updates: ["message","callback_query"] });
-    res.status(200).json({ ok: r.ok, webhook: webhookUrl }); return;
+    const wh = await tg("setWebhook", { url: webhookUrl, allowed_updates: ["message","callback_query"] });
+
+    let binInfo = "";
+    if (JBKEY && !JBID) {
+      try {
+        const r = await fetch(JBURL, {
+          method: "POST",
+          headers: { "X-Master-Key": JBKEY, "Content-Type": "application/json", "X-Bin-Name": "telegram-bot-data" },
+          body: JSON.stringify(DEFAULT_DATA)
+        });
+        const j = await r.json();
+        const newId = j.metadata && j.metadata.id;
+        binInfo = newId
+          ? "\n\n✅ تم إنشاء JSONBin!\nأضف هذا المتغير في Vercel:\nJSONBIN_ID = " + newId
+          : "\n\n❌ فشل إنشاء JSONBin: " + JSON.stringify(j);
+      } catch(e) { binInfo = "\n\n❌ خطأ JSONBin: " + e.message; }
+    } else if (!JBKEY) {
+      binInfo = "\n\n⚠️ أضف JSONBIN_KEY في Vercel أولاً ثم أعد زيارة هذه الصفحة";
+    } else {
+      binInfo = "\n\n✅ JSONBin مُعدَّل مسبقاً (ID: " + JBID + ")";
+    }
+
+    res.status(200).json({ ok: wh.ok, webhook: webhookUrl, storage: binInfo });
+    return;
   }
 
-  // Debug / health check
+  // Debug page
   if (path === "/debug" || url.searchParams.get("debug") === "1") {
-    const kvOk = !!KV_URL && !!KV_TOKEN;
-    let kvTest = "لم يُختبر";
-    if (kvOk) {
+    let storageTest = "لم يُختبر";
+    if (JBKEY && JBID) {
       try {
-        await kvSet("__ping", 1);
-        const v = await kvGet("__ping");
-        kvTest = v === 1 ? "✅ يعمل بشكل صحيح" : "❌ فشل القراءة";
-      } catch(e) { kvTest = "❌ خطأ: " + e.message; }
+        const d = await getAll();
+        storageTest = "✅ يعمل — أزرار: " + Object.keys(d.btns || {}).length + " | مستخدمون: " + (d.users || []).length;
+      } catch(e) { storageTest = "❌ خطأ: " + e.message; }
     }
     const html = "<!DOCTYPE html><html dir='rtl'><head><meta charset='UTF-8'><title>تشخيص</title>" +
       "<style>body{font-family:monospace;background:#111;color:#eee;padding:24px}h2{color:#7986cb}.ok{color:#81c784}.err{color:#e57373}.warn{color:#ffb74d}table{border-collapse:collapse;width:100%}td{padding:8px;border-bottom:1px solid #333}</style></head><body>" +
       "<h2>🔧 تشخيص البوت</h2><table>" +
-      "<tr><td>BOT_TOKEN</td><td class='" + (process.env.BOT_TOKEN ? "ok'>✅ مُعدَّل" : "warn'>⚠️ يستخدم القيمة الافتراضية") + "</td></tr>" +
-      "<tr><td>ADMIN_ID</td><td class='" + (process.env.ADMIN_ID ? "ok'>✅ " + ADMIN_ID : "warn'>⚠️ يستخدم القيمة الافتراضية: " + ADMIN_ID) + "</td></tr>" +
-      "<tr><td>UPSTASH_REDIS_REST_URL</td><td class='" + (KV_URL ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل — الأزرار لن تحفظ!") + "</td></tr>" +
-      "<tr><td>UPSTASH_REDIS_REST_TOKEN</td><td class='" + (KV_TOKEN ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل") + "</td></tr>" +
-      "<tr><td>اختبار KV</td><td class='" + (kvOk ? "" : "err'") + "'>" + (kvOk ? kvTest : "❌ غير ممكن بدون إعداد") + "</td></tr>" +
+      "<tr><td>BOT_TOKEN</td><td class='" + (process.env.BOT_TOKEN ? "ok'>✅ مُعدَّل" : "warn'>⚠️ افتراضي") + "</td></tr>" +
+      "<tr><td>ADMIN_ID</td><td class='ok'>✅ " + ADMIN_ID + "</td></tr>" +
+      "<tr><td>JSONBIN_KEY</td><td class='" + (JBKEY ? "ok'>✅ مُعدَّل" : "err'>❌ غير مُعدَّل — الأزرار لن تُحفظ!") + "</td></tr>" +
+      "<tr><td>JSONBIN_ID</td><td class='" + (JBID ? "ok'>✅ " + JBID : "err'>❌ غير مُعدَّل — الأزرار لن تُحفظ!") + "</td></tr>" +
+      "<tr><td>اختبار التخزين</td><td>" + storageTest + "</td></tr>" +
       "</table>" +
-      (!KV_URL ? "<div style='margin-top:20px;padding:16px;background:#2a1010;border:1px solid #c62828;border-radius:8px'>" +
-        "<b style='color:#ef9a9a'>⚠️ مطلوب: إضافة متغيرات البيئة في Vercel</b><br><br>" +
-        "1. افتح <a href='https://vercel.com/dashboard' style='color:#7986cb'>vercel.com/dashboard</a><br>" +
-        "2. اضغط على مشروعك → Settings → Environment Variables<br>" +
-        "3. أضف: <code>UPSTASH_REDIS_REST_URL</code> و <code>UPSTASH_REDIS_REST_TOKEN</code><br>" +
-        "4. اضغط Save → Redeploy" +
+      (!JBKEY || !JBID ? "<div style='margin-top:20px;padding:16px;background:#2a1010;border:1px solid #c62828;border-radius:8px'>" +
+        "<b style='color:#ef9a9a'>⚠️ إعداد مطلوب:</b><br><br>" +
+        "1. سجّل في <a href='https://jsonbin.io' style='color:#7986cb'>jsonbin.io</a> (مجاني)<br>" +
+        "2. أنشئ API Key من صفحة API Keys<br>" +
+        "3. أضف <code>JSONBIN_KEY</code> في Vercel → Settings → Environment Variables<br>" +
+        "4. افتح <code>/api/bot?setup=1</code> لإنشاء البين تلقائياً<br>" +
+        "5. انسخ الـ JSONBIN_ID المعروض وأضفه في Vercel<br>" +
+        "6. أعد النشر (Redeploy)" +
         "</div>" : "") +
       "</body></html>";
     res.setHeader("Content-Type","text/html; charset=utf-8");
@@ -621,27 +629,19 @@ module.exports = async function handler(req, res) {
     let b = ""; for await (const c of req) b += c;
     let update;
     try { update = JSON.parse(b); } catch { res.status(200).end(); return; }
-
     try {
       if (update.message) {
         const msg    = update.message;
         const userId = msg.from && msg.from.id;
         const text   = msg.text || "";
-
         if (text.startsWith("/start")) {
           await handleStart(msg, text.split(" ")[1] || "");
-
         } else if (text === "/admin" && isAdmin(userId)) {
           await adminMenu(msg.chat.id, null);
-
         } else if (isAdmin(userId) && msg.reply_to_message) {
-          // Admin replied to a bot force_reply message — extract state
           const replyText = (msg.reply_to_message.text || msg.reply_to_message.caption || "");
           const state = extractState(replyText);
-          if (state) {
-            await handleAdminReply(msg, state);
-          }
-
+          if (state) await handleAdminReply(msg, state);
         } else if (!isAdmin(userId)) {
           const pending = await checkSub(userId);
           if (pending.length) {
@@ -653,14 +653,10 @@ module.exports = async function handler(req, res) {
             await send(msg.chat.id, info.welcome, buildMenu(btns));
           }
         }
-
       } else if (update.callback_query) {
         await handleCallback(update.callback_query);
       }
-    } catch (e) {
-      console.error("Bot error:", e.message);
-    }
-
+    } catch(e) { console.error("Bot error:", e.message); }
     res.status(200).end(); return;
   }
 
